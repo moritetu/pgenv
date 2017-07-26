@@ -1,0 +1,6 @@
+/versions/*
+/src/*
+!.gitkeep
+/default
+/install.log
+

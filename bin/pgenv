@@ -1,0 +1,305 @@
+#!/bin/sh
+#
+# pgenv
+#
+set -u
+
+HERE=$(cd -P -- "$(dirname -- ${BASH_SOURCE:-$0})" && pwd -P)
+PGENV_HOME=$(cd -P -- $HERE/.. && pwd -P)
+
+usage() {
+  cat<<EOS
+usage: $0 [OPTIONS]
+
+OPTIONS:
+  -i, --install <version>
+      Install PostgreSQL with the specified version.
+  
+  -d, --with-debug
+      Install PostgreSQL with debug mode.
+      This option is used with '-i'.
+
+  -v, --version
+      Show the version of the installed PostgreSQL.
+
+  -s, --set <version>
+      Switch current context to the specified version.
+
+  -g, --global-set <version>
+      Switch global context to the specified version.
+
+  --no-exec
+      Do not exec when switch context.
+
+  --remove-work
+      Remove working resources.
+      ex) xxxx.tar.gz
+
+  -l, --list
+      Show installed version list.
+
+  -h, --help
+      Show usage.
+
+ENVIRONMENT VARIABLES:
+
+  LOG_LEVEL
+      0:debug, 1:info, 2:warn, 3:error
+
+  CONFIGURE_OPTIONS
+      This value is passed to the configure script of PostgreSQL.
+      Default is '--enable-debug --with-libxml'
+
+INSTALL:
+   # ~/.bash_profile
+   source $PGENV_HOME/profile
+
+Example) Install PostgreSQL Version 9.6.3
+
+  \$ $(basename $0) -i 9.6.3 --with-debug
+  \$ $(basename $0) -s 9.6.3
+  \$ psql -V
+
+EOS
+}
+
+_datetime() { date +'%Y-%m-%d %H:%M:%S'; }
+log_debug() { [ $PGENV_LOG_LEVEL -le 0 ] && print_log "$(_datetime) [DEBUG] $@";  }
+log_info()  { [ $PGENV_LOG_LEVEL -le 1 ] && print_log "$(_datetime) [INFO] $@";  }
+log_warn()  { [ $PGENV_LOG_LEVEL -le 2 ] && print_log "$(_datetime) [WARN] $@";  }
+log_error() { [ $PGENV_LOG_LEVEL -le 3 ] && print_log "$(_datetime) [ERROR] $@"; }
+print_log() { echo "$@"; }
+
+pgenv_parse_option() {
+  echo $1 | sed -e "s/.*=//"
+}
+
+pgenv_switch_context() {
+  local VERSION_DIR=$PGNEV_VERSIONS_DIR/$OPT_PGENV_CONTEXT
+  (
+    cd $PGENV_HOME
+    if [ ! -d $VERSION_DIR ]; then
+      log_error "version is not found: $OPT_PGENV_CONTEXT"
+      exit 1
+    fi
+    if [ $OPT_NO_EXEC -eq 1 ]; then
+      cat<<EOS
+Sorry, run the following command:
+export PATH=$PGENV_HOME/$VERSION_DIR/bin:\$PATH
+EOS
+    else
+      export PATH=$PGENV_HOME/$VERSION_DIR/bin:$PATH
+      exec $SHELL
+    fi
+
+    exec 
+  )
+}
+
+pgenv_switch_global_context() {
+  local VERSION_DIR=$PGNEV_VERSIONS_DIR/$OPT_PGENV_GLOBAL_CONTEXT
+  (
+    cd $PGENV_HOME
+    if [ ! -d $VERSION_DIR ]; then
+      log_error "version is not found: $OPT_PGENV_CONTEXT"
+      exit 1
+    fi
+    log_info "==> create default symbolic link to $OPT_PGENV_CONTEXT"
+    rm $PGENV_CURRENT_CONTEXT_LINK
+    ln -s $VERSION_DIR $PGENV_CURRENT_CONTEXT_LINK
+    echo "export PATH=$PGENV_HOME/$PGENV_CURRENT_CONTEXT_LINK/bin:\$PATH" > $PGENV_HOME/$PGENV_PROFILE
+    if [ $OPT_NO_EXEC -eq 1 ]; then
+      log_info "relogin shell"
+    else
+      exec $SHELL -l
+    fi
+  )
+}
+
+pgenv_pg_installed_version() {
+  local CURRENT_VERSION=$(basename $(readlink $PGENV_HOME/$PGENV_CURRENT_CONTEXT_LINK))
+  echo "Installed Versions ( * is current context ):"
+  for ver in $(ls $PGENV_HOME/$PGNEV_VERSIONS_DIR/ | sort); do
+    if [ "$ver" = "$CURRENT_VERSION" ]; then
+      echo " * $ver"
+    else
+      echo "   $ver"
+    fi
+  done
+}
+
+pgenv_pg_version() {
+  echo "psql : $(which psql)"
+  psql -V
+}
+
+pgenv_install_pg() {
+  local SOURCE_URL="$(printf "$POSTGRESQL_REPOSITORY" $OPT_INSTALL_VERSION $OPT_INSTALL_VERSION)"
+  local SOURCE_FILE=$(basename $SOURCE_URL)
+  local UNARCHIVED_SOURCE_DIR=$PGENV_HOME/$PGNEV_SOURCE_DIR/${SOURCE_FILE%.tar.gz}
+  local VERSION_DIR=$PGENV_HOME/$PGNEV_VERSIONS_DIR/$OPT_INSTALL_VERSION
+
+  if [ $OPT_REMOVE_WORK -eq 1 ]; then
+    rm -rf $PGENV_HOME/$PGNEV_SOURCE_DIR/$SOURCE_FILE
+  fi
+
+  # Download a tar ball
+  if [ ! -f $PGENV_HOME/$PGNEV_SOURCE_DIR/$SOURCE_FILE ]; then
+    log_info "==> download $SOURCE_URL"
+    curl -f -o $PGENV_HOME/$PGNEV_SOURCE_DIR/$SOURCE_FILE $SOURCE_URL
+    if [ $? -ne 0 ]; then
+      log_error "failed to download source, so exit."
+      exit 1
+    fi
+  fi
+
+  if [ ! -f $PGENV_HOME/$PGNEV_SOURCE_DIR/$SOURCE_FILE ]; then
+    log_error "may be failed to download source, so exit."
+    exit 1
+  fi
+
+  # Expand a tar ball
+  if [ ! -d $UNARCHIVED_SOURCE_DIR ]; then
+    (cd $PGENV_HOME/$PGNEV_SOURCE_DIR; tar xzf $SOURCE_FILE)
+    if [ $? -ne 0 ]; then
+      log_error "failed to unarchive '$PGENV_HOME/$PGNEV_SOURCE_DIR/${SOURCE_FILE}'"
+      exit 1
+    fi
+  fi
+
+  # Install PostgreSQL
+  (
+    cd $UNARCHIVED_SOURCE_DIR
+    log_info "==> make clean"
+    make clean > $PGENV_HOME/$PGENV_PG_INSTALL_LOG 2>&1
+    
+    local CONFIGURE_OPTIONS="${POSTGRESQL_CONFIGURE_OPTION} --prefix=$PGENV_HOME/versions/$OPT_INSTALL_VERSION"
+
+    log_info "==> configure"
+    log_info "$CONFIGURE_OPTIONS"
+    sh configure ${POSTGRESQL_CONFIGURE_OPTION} --prefix=$PGENV_HOME/versions/$OPT_INSTALL_VERSION  > $PGENV_HOME/$PGENV_PG_INSTALL_LOG 2>&1
+    if [ $? -ne 0 ]; then
+      log_error "failed to configure"
+      exit 1
+    else
+      log_info "ok"
+    fi
+
+    if [ $OPT_INSTALL_WITH_DEBUG -eq 1 ]; then
+      log_info "install with debug"
+      sed -e 's/ -g 02/-g3/' -i $UNARCHIVED_SOURCE_DIR/src/Makefile.global
+    fi
+
+    log_info "==> make install"
+    make install > $PGENV_HOME/$PGENV_PG_INSTALL_LOG 2>&1
+    if [ $? -ne 0 ]; then
+      log_error "failed to make"
+      exit 1
+    else
+      log_info "ok"
+    fi
+
+    if [ $OPT_REMOVE_WORK -eq 1 ]; then
+      log_info "==> remove temporary resources"
+      rm -rf $PGENV_HOME/$PGNEV_SOURCE_DIR/$SOURCE_FILE
+    fi
+  )
+
+  if [ ! -z $OPT_PGENV_CONTEXT ]; then
+    pgenv_switch_context
+  fi
+
+  if [ ! -z $OPT_PGENV_GLOBAL_CONTEXT ]; then
+    pgenv_switch_global_context
+  fi
+}
+
+# Required options.
+if [ $# -eq 0 ]; then
+  usage && exit
+fi
+
+### Variables ###
+
+# PostgreSQL Repository URL
+POSTGRESQL_REPOSITORY="https://ftp.postgresql.org/pub/source/v%s/postgresql-%s.tar.gz"
+
+# Log level
+PGENV_LOG_LEVEL=${LOG_LEVEL:-1}
+
+# The directory saves downloaded source archives.
+PGNEV_SOURCE_DIR=src
+PGNEV_VERSIONS_DIR=versions
+PGENV_CURRENT_CONTEXT_LINK=default
+PGENV_PROFILE=profile
+PGENV_PG_INSTALL_LOG=install.log
+
+# The configure options passed to the configure script.
+POSTGRESQL_CONFIGURE_OPTION=${CONFIGURE_OPTIONS:-"--enable-debug --with-libxml"}
+
+# The installed version.
+OPT_INSTALL_VERSION=
+
+# The context to set.
+OPT_PGENV_CONTEXT=
+
+# The global context to set.
+OPT_PGENV_GLOBAL_CONTEXT=
+
+# Whether install with debug mode.
+# 0: normal, 1: debug
+OPT_INSTALL_WITH_DEBUG=0
+
+# Remove temporary resources.
+# 0: not remove, 1: remove
+OPT_REMOVE_WORK=0
+
+OPT_NO_EXEC=0
+
+################
+
+
+# Parse options.
+while [ $# -gt 0 ]; do
+  case $1 in
+    -i|--install)
+      shift; OPT_INSTALL_VERSION=$(pgenv_parse_option "$1")
+      pgenv_install_pg
+      ;;
+    -s|--set)
+      shift; OPT_PGENV_CONTEXT=$(pgenv_parse_option "$1")
+      pgenv_switch_context
+      ;;
+    -g|--global-set)
+      shift; OPT_PGENV_GLOBAL_CONTEXT=$(pgenv_parse_option "$1")
+      pgenv_switch_global_context
+      ;;
+    -v|--version)
+      pgenv_pg_version
+      exit
+      ;;
+    -h| --help)
+      usage && exit
+      ;;
+    -d|--with-debug)
+      OPT_INSTALL_WITH_DEBUG=1
+      ;;
+    -l|--list)
+      pgenv_pg_installed_version
+      exit
+      ;;
+    --remove-work)
+      shift; OPT_REMOVE_WORK=1
+      ;;
+    --no-exec)
+      OPT_NO_EXEC=1
+      ;;
+    -*)
+      echo "$1: invalid option" && exit 1
+      ;;
+    *)
+      break
+      ;;		 
+  esac
+  shift
+done
