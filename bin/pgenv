@@ -258,21 +258,22 @@ OPT_NO_EXEC=0
 
 ################
 
+PGENV_COMMAND=
 
 # Parse options.
 while [ $# -gt 0 ]; do
   case $1 in
     -i|--install)
       shift; OPT_INSTALL_VERSION=$(pgenv_parse_option "$1")
-      pgenv_install_pg
+      PGENV_COMMAND="pgenv_install_pg"
       ;;
     -s|--set)
       shift; OPT_PGENV_CONTEXT=$(pgenv_parse_option "$1")
-      pgenv_switch_context
+      PGENV_COMMAND="pgenv_switch_context"
       ;;
     -g|--global-set)
       shift; OPT_PGENV_GLOBAL_CONTEXT=$(pgenv_parse_option "$1")
-      pgenv_switch_global_context
+      PGENV_COMMAND="pgenv_switch_global_context"
       ;;
     -v|--version)
       pgenv_pg_version
@@ -303,3 +304,7 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
+
+if [ ! -z $PGENV_COMMAND ]; then
+  $PGENV_COMMAND
+fi
