@@ -83,13 +83,15 @@ pgenv_parse_option() {
 }
 
 pgenv_current_version() {
-  basename $(cd -P -- $PGENV_HOME/$PGENV_CURRENT_CONTEXT_LINK && pwd -P)
+  if [ -f $PGENV_HOME/$PGENV_CURRENT_CONTEXT_LINK ]; then
+    basename $(cd -P -- $PGENV_HOME/$PGENV_CURRENT_CONTEXT_LINK && pwd -P)
+  fi
 }
 
 pgenv_prefix() {
   local VERSION=${1:-`pgenv_current_version`}
   local VERSION_DIR=$PGENV_HOME/$PGNEV_VERSIONS_DIR/$VERSION
-  if [ -d $VERSION_DIR ]; then
+  if [ ! -z $VERSION ] && [ -d $VERSION_DIR ]; then
     echo $VERSION_DIR
   fi
 }
@@ -97,7 +99,7 @@ pgenv_prefix() {
 pgenv_source_prefix() {
   local VERSION=${1:-`pgenv_current_version`}
   local SOURCE_DIR=$PGENV_HOME/$PGNEV_SOURCE_DIR/postgresql-$VERSION
-  if [ -d $SOURCE_DIR ]; then
+  if [ ! -z $VERSION ] && [ -d $SOURCE_DIR ]; then
     echo $SOURCE_DIR
   fi
 }
