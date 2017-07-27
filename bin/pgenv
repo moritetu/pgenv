@@ -4,20 +4,19 @@
 #
 set -u
 
-HERE=$(cd -P -- "$(dirname -- ${BASH_SOURCE:-$0})" && pwd -P)
-PGENV_HOME=$(cd -P -- $HERE/.. && pwd -P)
+HERE="$(cd -P -- "$(dirname -- ${BASH_SOURCE:-$0})" && pwd -P)"
+PGENV_HOME="$(cd -P -- $HERE/.. && pwd -P)"
 
 usage() {
   cat<<EOS
-usage: $0 [OPTIONS]
+usage: $(basename $0) [OPTIONS]
 
 OPTIONS:
   -i, --install <version>
       Install PostgreSQL with the specified version.
   
-  -d, --with-debug
-      Install PostgreSQL with debug mode.
-      This option is used with '-i'.
+  -d, --with-debug, -g3
+      Install PostgreSQL with debug mode. This option is used with '-i'.
 
   -v, --version
       Show the version of the installed PostgreSQL.
@@ -29,14 +28,23 @@ OPTIONS:
       Switch global context to the specified version.
 
   --no-exec
-      Do not exec when switch context.
+      Do not exec when switch context. This options is used with '-s' or '-g'.
 
   --remove-work
-      Remove working resources.
-      ex) xxxx.tar.gz
+      Remove working resources. This option is used with '-i'.
+      ex) xxxx.tar.gz x
+
+　--uninstall <version>
+     Uninstall the specified version.
 
   -l, --list
       Show installed version list.
+
+  --prefix, --prefix-ver <version>
+      Show path to the specified version.
+
+  --source-prefix, --source-prefix-ver <version>
+      Show path to the source directory of the specified version.
 
   -h, --help
       Show usage.
@@ -47,8 +55,8 @@ ENVIRONMENT VARIABLES:
       0:debug, 1:info, 2:warn, 3:error
 
   CONFIGURE_OPTIONS
-      This value is passed to the configure script of PostgreSQL.
-      Default is '--enable-debug --with-libxml'
+      This value is passed to the configure script of PostgreSQL. Default is '--enable-debug --with-libxml'.
+      Also you can pass options to configure script, using file 'configure_default_options'.
 
 INSTALL:
    # ~/.bash_profile
@@ -56,7 +64,7 @@ INSTALL:
 
 Example) Install PostgreSQL Version 9.6.3
 
-  \$ $(basename $0) -i 9.6.3 --with-debug
+  \$ $(basename $0) -i 9.6.3 -g3
   \$ $(basename $0) -s 9.6.3
   \$ psql -V
 
@@ -72,6 +80,26 @@ print_log() { echo "$@"; }
 
 pgenv_parse_option() {
   echo $1 | sed -e "s/.*=//"
+}
+
+pgenv_current_version() {
+  basename $(cd -P -- $PGENV_HOME/$PGENV_CURRENT_CONTEXT_LINK && pwd -P)
+}
+
+pgenv_prefix() {
+  local VERSION=${1:-`pgenv_current_version`}
+  local VERSION_DIR=$PGENV_HOME/$PGNEV_VERSIONS_DIR/$VERSION
+  if [ -d $VERSION_DIR ]; then
+    echo $VERSION_DIR
+  fi
+}
+
+pgenv_source_prefix() {
+  local VERSION=${1:-`pgenv_current_version`}
+  local SOURCE_DIR=$PGENV_HOME/$PGNEV_SOURCE_DIR/postgresql-$VERSION
+  if [ -d $SOURCE_DIR ]; then
+    echo $SOURCE_DIR
+  fi
 }
 
 pgenv_switch_context() {
@@ -117,9 +145,9 @@ pgenv_switch_global_context() {
 }
 
 pgenv_pg_installed_version() {
-  local CURRENT_VERSION=$(basename $(readlink $PGENV_HOME/$PGENV_CURRENT_CONTEXT_LINK))
+  local CURRENT_VERSION=`pgenv_current_version`
   echo "Installed Versions ( * is current context ):"
-  for ver in $(ls $PGENV_HOME/$PGNEV_VERSIONS_DIR/ | sort); do
+  for ver in $(ls $PGENV_HOME/$PGNEV_VERSIONS_DIR/ 2> /dev/null | sort); do
     if [ "$ver" = "$CURRENT_VERSION" ]; then
       echo " * $ver"
     else
@@ -129,7 +157,7 @@ pgenv_pg_installed_version() {
 }
 
 pgenv_pg_version() {
-  echo "psql : $(which psql)"
+  echo "current: `pgenv_prefix`"
   psql -V
 }
 
@@ -173,11 +201,22 @@ pgenv_install_pg() {
     log_info "==> make clean"
     make clean > $PGENV_HOME/$PGENV_PG_INSTALL_LOG 2>&1
     
-    local CONFIGURE_OPTIONS="${POSTGRESQL_CONFIGURE_OPTION} --prefix=$PGENV_HOME/versions/$OPT_INSTALL_VERSION"
+    local CONFIGURE_OPTIONS=
+    if [ -f $PGENV_HOME/$PGENV_PG_CONFIGURE_DEFAULT_OPTIONS ]; then
+      while read line; do
+	test "$line" = "" && continue
+	test "${line:0:1}" = "#" && continue
+	CONFIGURE_OPTIONS="$line $CONFIGURE_OPTIONS"
+      done < $PGENV_HOME/$PGENV_PG_CONFIGURE_DEFAULT_OPTIONS
+    fi
+    if [ ! -z $POSTGRESQL_CONFIGURE_OPTION ]; then
+      CONFIGURE_OPTIONS="${POSTGRESQL_CONFIGURE_OPTION}"
+    fi
+    CONFIGURE_OPTIONS="$CONFIGURE_OPTIONS --prefix=$PGENV_HOME/versions/$OPT_INSTALL_VERSION"
 
     log_info "==> configure"
     log_info "$CONFIGURE_OPTIONS"
-    sh configure ${POSTGRESQL_CONFIGURE_OPTION} --prefix=$PGENV_HOME/versions/$OPT_INSTALL_VERSION  > $PGENV_HOME/$PGENV_PG_INSTALL_LOG 2>&1
+    sh configure ${CONFIGURE_OPTIONS} > $PGENV_HOME/$PGENV_PG_INSTALL_LOG 2>&1
     if [ $? -ne 0 ]; then
       log_error "failed to configure"
       exit 1
@@ -186,8 +225,8 @@ pgenv_install_pg() {
     fi
 
     if [ $OPT_INSTALL_WITH_DEBUG -eq 1 ]; then
-      log_info "install with debug"
-      sed -e 's/ -g 02/-g3/' -i $UNARCHIVED_SOURCE_DIR/src/Makefile.global
+      log_info "install with CFLAGS '-g3'"
+      sed -i -e 's/ -g -02/ -g3/' $UNARCHIVED_SOURCE_DIR/src/Makefile.global
     fi
 
     log_info "==> make install"
@@ -214,6 +253,18 @@ pgenv_install_pg() {
   fi
 }
 
+
+pgenv_uninstall() {
+  local VERSION_DIR=$PGNEV_VERSIONS_DIR/${OPT_UNINSTALL_VERSION:-"dummy"}
+  if [ ! -d $PGENV_HOME/$VERSION_DIR ]; then
+    log_warn "version is not found: $OPT_UNINSTALL_VERSION"
+    exit
+  fi
+  log_info "==> uninstall $OPT_UNINSTALL_VERSION"
+  rm -rf $PGENV_HOME/$VERSION_DIR
+}
+
+
 # Required options.
 if [ $# -eq 0 ]; then
   usage && exit
@@ -233,9 +284,10 @@ PGNEV_VERSIONS_DIR=versions
 PGENV_CURRENT_CONTEXT_LINK=default
 PGENV_PROFILE=profile
 PGENV_PG_INSTALL_LOG=install.log
+PGENV_PG_CONFIGURE_DEFAULT_OPTIONS=configure_default_options
 
 # The configure options passed to the configure script.
-POSTGRESQL_CONFIGURE_OPTION=${CONFIGURE_OPTIONS:-"--enable-debug --with-libxml"}
+POSTGRESQL_CONFIGURE_OPTION=${CONFIGURE_OPTIONS:-}
 
 # The installed version.
 OPT_INSTALL_VERSION=
@@ -254,7 +306,12 @@ OPT_INSTALL_WITH_DEBUG=0
 # 0: not remove, 1: remove
 OPT_REMOVE_WORK=0
 
+# Do exec at switching context.
+# 0: no exec, 1: do exec
 OPT_NO_EXEC=0
+
+# The uninstalled version.
+OPT_UNINSTALL_VERSION=
 
 ################
 
@@ -279,10 +336,10 @@ while [ $# -gt 0 ]; do
       pgenv_pg_version
       exit
       ;;
-    -h| --help)
+    -h|--help)
       usage && exit
       ;;
-    -d|--with-debug)
+    -d|--with-debug|-g3)
       OPT_INSTALL_WITH_DEBUG=1
       ;;
     -l|--list)
@@ -294,6 +351,22 @@ while [ $# -gt 0 ]; do
       ;;
     --no-exec)
       OPT_NO_EXEC=1
+      ;;
+    --uninstall)
+      shift; OPT_UNINSTALL_VERSION="$1"
+      PGENV_COMMAND="pgenv_uninstall"
+      ;;
+    --prefix)
+      pgenv_prefix
+      ;;
+    --prefix-ver)
+      shift; pgenv_prefix "$1"
+      ;;
+    --source-prefix)
+      pgenv_source_prefix
+      ;;
+    --source-prefix-ver)
+      shift; pgenv_source_prefix "$1"
       ;;
     -*)
       echo "$1: invalid option" && exit 1
