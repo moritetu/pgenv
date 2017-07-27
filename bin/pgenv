@@ -37,7 +37,7 @@ OPTIONS:
 　--uninstall <version>
      Uninstall the specified version.
 
-v  -l, --list
+  -l, --list
       Show installed version list.
 
   --prefix, --prefix-ver <version>
@@ -45,6 +45,13 @@ v  -l, --list
 
   --source-prefix, --source-prefix-ver <version>
       Show path to the source directory of the specified version.
+
+  --diff <version1>:<version2>:<file>
+      Show diffs of file beween version1 and version2. (diff -u ...). '@' equals the current version.
+      ex) --diff 9.5.4:9.6.3:src/backend/parser/analyze.c
+
+  -e, --edit <version>:<file>
+      Open editor with the specified file.
 
   -h, --help
       Show usage.
@@ -115,7 +122,7 @@ pgenv_switch_context() {
     if [ $OPT_NO_EXEC -eq 1 ]; then
       cat<<EOS
 Sorry, run the following command:
-export PATH=$PGENV_HOME/$VERSION_DIR/bin:\$PATH
+export PATH="$PGENV_HOME/$VERSION_DIR"/bin:"\$PATH"
 EOS
     else
       export PATH="$PGENV_HOME/$VERSION_DIR/bin":"$PATH"
@@ -135,7 +142,7 @@ pgenv_switch_global_context() {
     log_info "==> create default symbolic link to $OPT_PGENV_GLOBAL_CONTEXT"
     rm -rf $PGENV_CURRENT_CONTEXT_LINK
     ln -s "$VERSION_DIR" $PGENV_CURRENT_CONTEXT_LINK
-    echo "export PATH=$PGENV_HOME/$PGENV_CURRENT_CONTEXT_LINK/bin:\$PATH" > "$PGENV_HOME/$PGENV_PROFILE"
+    echo "export PATH=\"$PGENV_HOME/$PGENV_CURRENT_CONTEXT_LINK/bin\":\"\$PATH\"" > "$PGENV_HOME/$PGENV_PROFILE"
     if [ $OPT_NO_EXEC -eq 1 ]; then
       log_info "relogin shell"
     else
@@ -166,6 +173,8 @@ pgenv_install_pg() {
   local SOURCE_FILE="$(basename $SOURCE_URL)"
   local UNARCHIVED_SOURCE_DIR="$PGENV_HOME/$PGNEV_SOURCE_DIR/${SOURCE_FILE%.tar.gz}"
   local VERSION_DIR="$PGENV_HOME/$PGNEV_VERSIONS_DIR/$OPT_INSTALL_VERSION"
+
+  mkdir -p "$PGENV_HOME/$PGNEV_SOURCE_DIR" "$PGENV_HOME/$PGNEV_VERSIONS_DIR"
 
   if [ $OPT_REMOVE_WORK -eq 1 ]; then
     rm -rf "$PGENV_HOME/$PGNEV_SOURCE_DIR/$SOURCE_FILE"
@@ -264,6 +273,55 @@ pgenv_uninstall() {
   rm -rf "$PGENV_HOME/$VERSION_DIR"
 }
 
+pgenv_diff() {
+  local OLD_VER="$(echo $1 | awk -F: '{print $1}')"
+  local NEW_VER="$(echo $1 | awk -F: '{print $2}')"
+  local FILEPATH="$(echo $1 | awk -F: '{print $3}')"
+  local DIFF_COMMAND="diff -u"
+  if [[ -x `which colordiff` ]]; then
+    DIFF_COMMAND="colordiff -u"
+  fi
+
+  test "$OLD_VER" = "@" && OLD_VER=`pgenv_current_version`
+  test "$NEW_VER" = "@" && NEW_VER=`pgenv_current_version`
+
+  if [ -z $OLD_VER ] || [ -z $NEW_VER ] || [ -z $FILEPATH ]; then
+    log_error "--diff <version1>:<version2>:<file>"
+    exit 1
+  fi
+
+  local OLD_FILE="$(pgenv_source_prefix $OLD_VER)/$FILEPATH"
+  local NEW_FILE="$(pgenv_source_prefix $NEW_VER)/$FILEPATH"
+
+  if [ -f "$OLD_FILE" ] && [ -f "$NEW_FILE" ]; then
+    $DIFF_COMMAND "$OLD_FILE" "$NEW_FILE"
+  else
+    log_warn "file not found: $OLD_FILE , $NEW_FILE "
+    exit 1
+  fi
+}
+
+pgenv_edit() {
+  local VERSION="$(echo $1 | awk -F: '{print $1}')"
+  local FILEPATH="$(echo $1 | awk -F: '{print $2}')"
+  local EDITOR_COMMAND=${EDITOR:-emacs}
+
+  test "$VERSION" = "@" && VERSION=`pgenv_current_version`
+
+  if [ -z $VERSION ] || [ -z $FILEPATH ]; then
+    log_error "--edit <version>:<file>"
+    exit 1
+  fi
+
+  local EDIT_FILE="$(pgenv_source_prefix $VERSION)/$FILEPATH"
+
+  if [ -f "$EDIT_FILE" ] || [ -L "$EDIT_FILE" ]; then
+    $EDITOR_COMMAND "$EDIT_FILE"
+  else
+    log_warn "file not found: $EDIT_FILE"
+    exit 1
+  fi
+}
 
 # Required options.
 if [ $# -eq 0 ]; then
@@ -358,16 +416,28 @@ while [ $# -gt 0 ]; do
       ;;
     --prefix)
       pgenv_prefix
+      exit
       ;;
     --prefix-ver)
       shift; pgenv_prefix "$1"
+      exit
       ;;
     --source-prefix)
       pgenv_source_prefix
+      exit
       ;;
     --source-prefix-ver)
       shift; pgenv_source_prefix "$1"
+      exit
       ;;
+    --diff)
+      shift; pgenv_diff "$1"
+      exit
+      ;;
+    -e|--edit)
+      shift; pgenv_edit "$1"
+      exit
+      ;;      
     -*)
       echo "$1: invalid option" && exit 1
       ;;

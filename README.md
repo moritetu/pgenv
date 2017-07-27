@@ -23,13 +23,27 @@ touch `pwd`/pgenv/profile
 source ~/.bash_profile
 ```
 
-## Install PostgreSQL
+# Install PostgreSQL
 
 ```
 pgenv -i 9.6.3 -d
 pgenv -s 9.6.3     # exec $SHELL
 pgenv -g 9.6.3     # exec $SHELL -l
 psql -V
+```
+
+### Diff
+
+```
+pgenv --diff 9.5.6:9.6.3:src/backend/parser/analyze.c | less -R
+# @ is current version
+pgenv --diff 9.5.6:@:src/backend/parser/analyze.c | less -R
+```
+
+### Edit
+
+```
+EDITOR=vim pgenv -e @:src/backend/parser/analyze.c
 ```
 
 ### Others
