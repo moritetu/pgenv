@@ -53,6 +53,9 @@ OPTIONS:
   -e, --edit <version>:<file>
       Open editor with the specified file.
 
+  --grep <version>:<directory>:"<regex>"
+      Find and Grep.
+
   -h, --help
       Show usage.
 
@@ -290,10 +293,18 @@ pgenv_diff() {
     exit 1
   fi
 
-  local OLD_FILE="$(pgenv_source_prefix $OLD_VER)/$FILEPATH"
-  local NEW_FILE="$(pgenv_source_prefix $NEW_VER)/$FILEPATH"
+  local OLD_FILE=
+  local NEW_FILE=
+  if [ "${FILEPATH:0:1}" = "/" ]; then
+    OLD_FILE="$FILEPATH"
+    NEW_FILE="$FILEPATH"
+  else
+    OLD_FILE="$(pgenv_source_prefix $OLD_VER)/$FILEPATH"
+    NEW_FILE="$(pgenv_source_prefix $NEW_VER)/$FILEPATH"
+  fi
 
   if [ -f "$OLD_FILE" ] && [ -f "$NEW_FILE" ]; then
+    log_info "==> $DIFF_COMMAND \"$OLD_FILE\" \"$NEW_FILE\""
     $DIFF_COMMAND "$OLD_FILE" "$NEW_FILE"
   else
     log_warn "file not found: $OLD_FILE , $NEW_FILE "
@@ -308,12 +319,17 @@ pgenv_edit() {
 
   test "$VERSION" = "@" && VERSION=`pgenv_current_version`
 
-  if [ -z $VERSION ] || [ -z $FILEPATH ]; then
+  if [ -z $VERSION ] || [ -z "$FILEPATH" ]; then
     log_error "--edit <version>:<file>"
     exit 1
   fi
 
-  local EDIT_FILE="$(pgenv_source_prefix $VERSION)/$FILEPATH"
+  local EDIT_FILE=
+  if [ "${FILEPATH:0:1}" = "/" ]; then
+    EDIT_FILE="$FILEPATH"
+  else
+    EDIT_FILE="$(pgenv_source_prefix $VERSION)/$FILEPATH"
+  fi
 
   if [ -f "$EDIT_FILE" ] || [ -L "$EDIT_FILE" ]; then
     $EDITOR_COMMAND "$EDIT_FILE"
@@ -321,6 +337,33 @@ pgenv_edit() {
     log_warn "file not found: $EDIT_FILE"
     exit 1
   fi
+}
+
+pgenv_find_grep() {
+  local VERSION="$(echo $1 | awk -F: '{print $1}')"
+  local DIRECTORY="$(echo $1 | awk -F: '{print $2}')"
+  local REGEXP="$(echo $1 | awk -F: '{print $3}')"
+
+  test "$VERSION" = "@" && VERSION=`pgenv_current_version`
+  test "$DIRECTORY" = "@" && VERSION=`pgenv_current_version`
+
+  if [ -z $VERSION ] || [ -z "$DIRECTORY" ] || [ -z "$REGEXP" ]; then
+    log_error "--grep <version>:<directory>:\"<regexp>\""
+    exit 1
+  fi
+
+  local FIND_DIRECTORY=
+  if [ "${FILEPATH:0:1}" = "/" ]; then
+    FIND_DIRECTORY="$DIRECTORY"
+  else
+    FIND_DIRECTORY="$(pgenv_source_prefix $VERSION)/$DIRECTORY"
+  fi
+
+  if [ ! -d "$FIND_DIRECTORY" ]; then
+    log_warn "directory not found: $FIND_DIRECTORY"
+    exit 1
+  fi
+  find $FIND_DIRECTORY -type f -print0 | xargs -0 grep -I -e "$REGEXP"
 }
 
 # Required options.
@@ -437,7 +480,11 @@ while [ $# -gt 0 ]; do
     -e|--edit)
       shift; pgenv_edit "$1"
       exit
-      ;;      
+      ;;
+    --grep)
+      shift; pgenv_find_grep "$1"
+      exit
+      ;;
     -*)
       echo "$1: invalid option" && exit 1
       ;;

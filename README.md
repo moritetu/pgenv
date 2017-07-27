@@ -46,6 +46,12 @@ pgenv --diff 9.5.6:@:src/backend/parser/analyze.c | less -R
 EDITOR=vim pgenv -e @:src/backend/parser/analyze.c
 ```
 
+### Find and Grep
+
+```
+pgenv --grep @:src/backend/parser:'_hook'
+```
+
 ### Others
 
 ```
