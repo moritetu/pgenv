@@ -56,6 +56,9 @@ OPTIONS:
   --grep <version>:<directory>:"<regex>"
       Find and Grep.
 
+  --select
+      Interactively select version in current context. (do exec \$SHELL)
+
   -h, --help
       Show usage.
 
@@ -89,7 +92,22 @@ log_error() { [ $PGENV_LOG_LEVEL -le 3 ] && print_log "$(_datetime) [ERROR] $@";
 print_log() { echo "$@"; }
 
 pgenv_parse_option() {
-  echo $1 | sed -e "s/.*=//"
+  local value="${1:-}"
+  echo "$value" | sed -e "s/.*=//"
+}
+
+pgenv_validate_option_value() {
+  local value="${1:-}"
+  if [ "$value" = "" ]; then
+    log_error "option is required."
+    exit 1
+  fi
+
+  if [ ${value:0:1} = "-" ] || [ ${value:0:2} = "--" ]; then
+    log_error "invalid option: $value"
+    exit 1
+  fi
+  return 0
 }
 
 pgenv_current_version() {
@@ -167,8 +185,8 @@ pgenv_pg_installed_version() {
 }
 
 pgenv_pg_version() {
-  echo "current: `pgenv_prefix`"
-  psql -V
+  echo "Global Context : `pgenv_prefix`"
+  echo "Current Context: `psql -V`"
 }
 
 pgenv_install_pg() {
@@ -214,12 +232,16 @@ pgenv_install_pg() {
     make clean > "$PGENV_HOME/$PGENV_PG_INSTALL_LOG" 2>&1
 
     local CONFIGURE_OPTIONS=
-    if [ -f "$PGENV_HOME/$PGENV_PG_CONFIGURE_DEFAULT_OPTIONS" ]; then
+    local CONFIGURE_OPTIONS_FILE="$PGENV_HOME/$PGENV_PG_CONFIGURE_DEFAULT_OPTIONS"
+    if [ -f "$PGENV_HOME/${PGENV_PG_CONFIGURE_DEFAULT_OPTIONS}-${OPT_INSTALL_VERSION}" ]; then
+      CONFIGURE_OPTIONS_FILE="$PGENV_HOME/${PGENV_PG_CONFIGURE_DEFAULT_OPTIONS}-${OPT_INSTALL_VERSION}"
+    fi
+    if [ -f "$CONFIGURE_OPTIONS_FILE" ]; then
       while read line; do
 	test "$line" = "" && continue
 	test "${line:0:1}" = "#" && continue
 	CONFIGURE_OPTIONS="$line $CONFIGURE_OPTIONS"
-      done < "$PGENV_HOME/$PGENV_PG_CONFIGURE_DEFAULT_OPTIONS"
+      done < "$CONFIGURE_OPTIONS_FILE"
     fi
     if [ ! -z $POSTGRESQL_CONFIGURE_OPTION ]; then
       CONFIGURE_OPTIONS="${POSTGRESQL_CONFIGURE_OPTION}"
@@ -270,7 +292,7 @@ pgenv_uninstall() {
   local VERSION_DIR="$PGNEV_VERSIONS_DIR/${OPT_UNINSTALL_VERSION:-dummy}"
   if [ ! -d "$PGENV_HOME/$VERSION_DIR" ]; then
     log_warn "version is not found: $OPT_UNINSTALL_VERSION"
-    exit
+    exit 1
   fi
   log_info "==> uninstall $OPT_UNINSTALL_VERSION"
   rm -rf "$PGENV_HOME/$VERSION_DIR"
@@ -366,6 +388,31 @@ pgenv_find_grep() {
   find $FIND_DIRECTORY -type f -print0 | xargs -0 grep -I -e "$REGEXP"
 }
 
+pgenv_select_version() {
+  local VERSIONS_DIR="$PGENV_HOME"/$PGNEV_VERSIONS_DIR
+  local SELECTED_VERSION=
+  echo "Current Version: `pgenv_current_version`"
+  PS3="Which version do you select ? (quit:q) > "
+  select SELECTED_VERSION in $(ls $VERSIONS_DIR | sort);
+  do
+    if [ "${REPLY}" = "q" ] || [ "${REPLY}" = "quit" ]; then
+        exit 0
+    fi
+
+    if [ -z "$SELECTED_VERSION" ]; then
+      continue
+    fi
+    
+    case $SELECTED_VERSION in
+      *)
+        OPT_PGENV_CONTEXT="$SELECTED_VERSION"
+        pgenv_switch_context
+        exit
+        ;;
+    esac
+  done
+}
+
 # Required options.
 if [ $# -eq 0 ]; then
   usage && exit
@@ -422,7 +469,8 @@ PGENV_COMMAND=
 while [ $# -gt 0 ]; do
   case $1 in
     -i|--install)
-      shift; OPT_INSTALL_VERSION=$(pgenv_parse_option "$1")
+      shift; pgenv_validate_option_value "$1"
+      OPT_INSTALL_VERSION=$(pgenv_parse_option "$1")
       PGENV_COMMAND="pgenv_install_pg"
       ;;
     -s|--set)
@@ -430,7 +478,8 @@ while [ $# -gt 0 ]; do
       PGENV_COMMAND="pgenv_switch_context"
       ;;
     -g|--global-set)
-      shift; OPT_PGENV_GLOBAL_CONTEXT=$(pgenv_parse_option "$1")
+      shift; pgenv_validate_option_value "$1"
+      OPT_PGENV_GLOBAL_CONTEXT=$(pgenv_parse_option "$1")
       PGENV_COMMAND="pgenv_switch_global_context"
       ;;
     -v|--version)
@@ -454,7 +503,8 @@ while [ $# -gt 0 ]; do
       OPT_NO_EXEC=1
       ;;
     --uninstall)
-      shift; OPT_UNINSTALL_VERSION="$1"
+      shift; pgenv_validate_option_value "$1"
+      OPT_UNINSTALL_VERSION="$1"
       PGENV_COMMAND="pgenv_uninstall"
       ;;
     --prefix)
@@ -462,7 +512,8 @@ while [ $# -gt 0 ]; do
       exit
       ;;
     --prefix-ver)
-      shift; pgenv_prefix "$1"
+      shift; pgenv_validate_option_value "$1"
+      pgenv_prefix "$1"
       exit
       ;;
     --source-prefix)
@@ -470,20 +521,27 @@ while [ $# -gt 0 ]; do
       exit
       ;;
     --source-prefix-ver)
-      shift; pgenv_source_prefix "$1"
+      shift; pgenv_validate_option_value "$1"
+      pgenv_source_prefix "$1"
       exit
       ;;
     --diff)
-      shift; pgenv_diff "$1"
+      shift; pgenv_validate_option_value "$1"
+      pgenv_diff "$1"
       exit
       ;;
     -e|--edit)
-      shift; pgenv_edit "$1"
+      shift; pgenv_validate_option_value "$1"
+      pgenv_edit "$1"
       exit
       ;;
     --grep)
-      shift; pgenv_find_grep "$1"
+      shift; pgenv_validate_option_value "$1"
+      pgenv_find_grep "$1"
       exit
+      ;;
+    --select)
+      pgenv_select_version
       ;;
     -*)
       echo "$1: invalid option" && exit 1
