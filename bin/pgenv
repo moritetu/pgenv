@@ -59,6 +59,9 @@ OPTIONS:
   --select
       Interactively select version in current context. (do exec \$SHELL)
 
+  --directories
+      Get and show version list from postgresql source repository
+
   -h, --help
       Show usage.
 
@@ -413,6 +416,26 @@ pgenv_select_version() {
   done
 }
 
+
+pgenv_get_version_list() {
+  local PG_DIRECTORIES_FILE="$PGENV_HOME/$PGENV_PG_DIRECTORIES"
+  local SHOULD_REFRESH=0
+  if [ -f $PG_DIRECTORIES_FILE ]; then
+    if [ $(find $PG_DIRECTORIES_FILE -mtime 1 | wc -l) -ne 0 ]; then
+      SHOULD_REFRESH=1
+    fi
+  else
+    SHOULD_REFRESH=1
+  fi
+
+  if [ $SHOULD_REFRESH -eq 1 ]; then
+    log_info "==> get version list from $POSTGRESQL_REPOSITORY_DIRECTORIES"
+    curl -s -f $POSTGRESQL_REPOSITORY_DIRECTORIES | grep -e 'v[[:digit:]][^"/<>]*' -o | sort | uniq > "$PGENV_HOME/$PGENV_PG_DIRECTORIES"
+  fi
+
+  cat "$PGENV_HOME/$PGENV_PG_DIRECTORIES" | sed -e 's/^v//' | sort -n 
+}
+
 # Required options.
 if [ $# -eq 0 ]; then
   usage && exit
@@ -422,6 +445,7 @@ fi
 
 # PostgreSQL Repository URL
 POSTGRESQL_REPOSITORY="https://ftp.postgresql.org/pub/source/v%s/postgresql-%s.tar.gz"
+POSTGRESQL_REPOSITORY_DIRECTORIES="https://www.postgresql.org/ftp/source/"
 
 # Log level
 PGENV_LOG_LEVEL=${LOG_LEVEL:-1}
@@ -433,6 +457,7 @@ PGENV_CURRENT_CONTEXT_LINK=default
 PGENV_PROFILE=profile
 PGENV_PG_INSTALL_LOG=install.log
 PGENV_PG_CONFIGURE_DEFAULT_OPTIONS=configure_default_options
+PGENV_PG_DIRECTORIES=postgresql_directories
 
 # The configure options passed to the configure script.
 POSTGRESQL_CONFIGURE_OPTION="${CONFIGURE_OPTIONS:-}"
@@ -542,6 +567,9 @@ while [ $# -gt 0 ]; do
       ;;
     --select)
       pgenv_select_version
+      ;;
+    --directories)
+      pgenv_get_version_list
       ;;
     -*)
       echo "$1: invalid option" && exit 1
