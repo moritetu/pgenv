@@ -497,7 +497,7 @@ while [ $# -gt 0 ]; do
       exit
       ;;
     --remove-work)
-      shift; OPT_REMOVE_WORK=1
+      OPT_REMOVE_WORK=1
       ;;
     --no-exec)
       OPT_NO_EXEC=1
