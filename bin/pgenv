@@ -420,8 +420,11 @@ pgenv_select_version() {
 pgenv_get_version_list() {
   local PG_DIRECTORIES_FILE="$PGENV_HOME/$PGENV_PG_DIRECTORIES"
   local SHOULD_REFRESH=0
-  if [ -f $PG_DIRECTORIES_FILE ]; then
-    if [ $(find $PG_DIRECTORIES_FILE -mtime 1 | wc -l) -ne 0 ]; then
+  local RET=0
+  local temp=
+
+  if [ -f "$PG_DIRECTORIES_FILE" ] && [ -s "$PG_DIRECTORIES_FILE" ]; then
+    if [ $(find "$PG_DIRECTORIES_FILE" -mtime 1 | wc -l) -ne 0 ]; then
       SHOULD_REFRESH=1
     fi
   else
@@ -430,7 +433,13 @@ pgenv_get_version_list() {
 
   if [ $SHOULD_REFRESH -eq 1 ]; then
     log_info "==> get version list from $POSTGRESQL_REPOSITORY_DIRECTORIES"
-    curl -s -f $POSTGRESQL_REPOSITORY_DIRECTORIES | grep -e 'v[[:digit:]][^"/<>]*' -o | sort | uniq > "$PGENV_HOME/$PGENV_PG_DIRECTORIES"
+    temp="$(curl -s -f $POSTGRESQL_REPOSITORY_DIRECTORIES)"
+    RET=$?
+    if [ $RET -ne 0 ]; then
+      log_error "failed to download. status=$RET"
+      exit 1
+    fi
+    printf "%s" "$temp"| grep -e 'v[[:digit:]][^"/<>]*' -o | sort | uniq > "$PGENV_HOME/$PGENV_PG_DIRECTORIES"
   fi
 
   cat "$PGENV_HOME/$PGENV_PG_DIRECTORIES" | sed -e 's/^v//' | sort -n 
@@ -567,9 +576,11 @@ while [ $# -gt 0 ]; do
       ;;
     --select)
       pgenv_select_version
+      exit
       ;;
     --directories)
       pgenv_get_version_list
+      exit
       ;;
     -*)
       echo "$1: invalid option" && exit 1
