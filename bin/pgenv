@@ -1,68 +1,47 @@
-#!/bin/sh
+#!/usr/bin/env bash
 #
 # pgenv
 #
 set -u
 
-HERE="$(cd -P -- "$(dirname -- ${BASH_SOURCE:-$0})" && pwd -P)"
-PGENV_HOME="$(cd -P -- $HERE/.. && pwd -P)"
+HERE="$(cd -P -- "$(dirname -- "${BASH_SOURCE:-$0}")" && pwd -P)"
+PGENV_HOME="$(cd -P -- "$HERE"/.. && pwd -P)"
 
 usage() {
   cat<<EOS
-usage: $(basename $0) [OPTIONS]
+usage: $(basename $0) <command> [<args>]
 
-OPTIONS:
-  -i, --install <version>
+COMMAND:
+  install [--g3] [--clean] [--shell] [--global] <version>
       Install PostgreSQL with the specified version.
-  
-  -d, --with-debug, -g3
-      Install PostgreSQL with debug mode. This option is used with '-i'.
-
-  -v, --version
-      Show the version of the installed PostgreSQL.
-
-  -s, --set <version>
-      Switch current context to the specified version.
-
-  -g, --global-set <version>
-      Switch global context to the specified version.
-
-  --no-exec
-      Do not exec when switch context. This options is used with '-s' or '-g'.
-
-  --remove-work
-      Remove working resources. This option is used with '-i'.
-      ex) xxxx.tar.gz x
-
-　--uninstall <version>
+　uninstall <version>
      Uninstall the specified version.
-
-  -l, --list
+  version
+      Show the version of the installed PostgreSQL.
+  shell [--no-exec] <version>
+      Switch current context to the specified version.
+  global <version>
+      Switch global context to the specified version.
+  list
       Show installed version list.
-
-  --prefix, --prefix-ver <version>
+  prefix [<version>]
       Show path to the specified version.
-
-  --source-prefix, --source-prefix-ver <version>
+  source-prefix [<version>]
       Show path to the source directory of the specified version.
-
-  --diff <version1>:<version2>:<file>
+  diff <version1>:<version2>:<file>
       Show diffs of file beween version1 and version2. (diff -u ...). '@' equals the current version.
       ex) --diff 9.5.4:9.6.3:src/backend/parser/analyze.c
-
-  -e, --edit <version>:<file>
+  edit <version>:<file>
       Open editor with the specified file.
-
-  --grep <version>:<directory>:"<regex>"
+  grep <version>:<directory>:"<regex>"
       Find and Grep.
-
-  --select
+  select [--global] [--no-exec]
       Interactively select version in current context. (do exec \$SHELL)
-
-  --directories
+  directories
       Get and show version list from postgresql source repository
-
-  -h, --help
+  link <version> <source>
+     Create a symbolic link <version> to <source> under the version directory.
+  help
       Show usage.
 
 ENVIRONMENT VARIABLES:
@@ -80,8 +59,8 @@ INSTALL:
 
 Example) Install PostgreSQL Version 9.6.3
 
-  \$ $(basename $0) -i 9.6.3 -g3
-  \$ $(basename $0) -s 9.6.3
+  \$ $(basename $0) install --g3 9.6.3
+  \$ $(basename $0) set 9.6.3
   \$ psql -V
 
 EOS
@@ -90,9 +69,14 @@ EOS
 _datetime() { date +'%Y-%m-%d %H:%M:%S'; }
 log_debug() { [ $PGENV_LOG_LEVEL -le 0 ] && print_log "$(_datetime) [DEBUG] $@";  }
 log_info()  { [ $PGENV_LOG_LEVEL -le 1 ] && print_log "$(_datetime) [INFO] $@";  }
-log_warn()  { [ $PGENV_LOG_LEVEL -le 2 ] && print_log "$(_datetime) [WARN] $@";  }
-log_error() { [ $PGENV_LOG_LEVEL -le 3 ] && print_log "$(_datetime) [ERROR] $@"; }
+log_warn()  { [ $PGENV_LOG_LEVEL -le 2 ] && print_log "$(_datetime) [WARN] $@";  } >&2
+log_error() { [ $PGENV_LOG_LEVEL -le 3 ] && print_log "$(_datetime) [ERROR] $@"; } >&2
 print_log() { echo "$@"; }
+
+abort() {
+  echo "$@"
+  exit 1
+} >&2
 
 pgenv_parse_option() {
   local value="${1:-}"
@@ -122,7 +106,7 @@ pgenv_current_version() {
 pgenv_prefix() {
   local VERSION=${1:-`pgenv_current_version`}
   local VERSION_DIR="$PGENV_HOME/$PGNEV_VERSIONS_DIR/$VERSION"
-  if [ ! -z $VERSION ] && [ -d "$VERSION_DIR" ]; then
+  if [ ! -z $VERSION ] && [ -e "$VERSION_DIR" ]; then
     echo $VERSION_DIR
   fi
 }
@@ -130,20 +114,31 @@ pgenv_prefix() {
 pgenv_source_prefix() {
   local VERSION=${1:-`pgenv_current_version`}
   local SOURCE_DIR="$PGENV_HOME/$PGNEV_SOURCE_DIR/postgresql-$VERSION"
-  if [ ! -z $VERSION ] && [ -d "$SOURCE_DIR" ]; then
+  if [ ! -z $VERSION ] && [ -e "$SOURCE_DIR" ]; then
     echo $SOURCE_DIR
   fi
 }
 
 pgenv_switch_context() {
-  local VERSION_DIR="$PGNEV_VERSIONS_DIR/$OPT_PGENV_CONTEXT"
+  [ $# -eq 0 ] && abort "usage: shell [--no-exec] <version>"
+  local no_exec=0
+  local version
+  for arg in "$@"; do
+    case "$arg" in
+      --no-exec) no_exec=1 ;;
+      *)         version="$arg"; break; ;;
+    esac
+  done
+  [ -z "$version" ] && abort "version is required"
+
+  local VERSION_DIR="$PGNEV_VERSIONS_DIR/$version"
   (
-    cd $PGENV_HOME
-    if [ ! -d "$VERSION_DIR" ]; then
-      log_error "version is not found: $OPT_PGENV_CONTEXT"
+    cd "$PGENV_HOME"
+    if [ ! -e "$VERSION_DIR" ]; then
+      log_error "version is not found: $version"
       exit 1
     fi
-    if [ $OPT_NO_EXEC -eq 1 ]; then
+    if [ $no_exec -eq 1 ]; then
       cat<<EOS
 Sorry, run the following command:
 export PATH="$PGENV_HOME/$VERSION_DIR"/bin:"\$PATH"
@@ -156,22 +151,29 @@ EOS
 }
 
 pgenv_switch_global_context() {
-  local VERSION_DIR="$PGNEV_VERSIONS_DIR/$OPT_PGENV_GLOBAL_CONTEXT"
+  [ $# -eq 0 ] && abort "usage: global <version>"
+  local no_exec=0
+  local version
+  for arg in "$@"; do
+    case "$arg" in
+      --no-exec) no_exec=1 ;;
+      -*)        abort "invalid option: $arg" ;;
+      *)         version="$arg"; break; ;;
+    esac
+  done
+  [ -z "$version" ] && abort "version is required"
+
+  local VERSION_DIR="$PGNEV_VERSIONS_DIR/$version"
   (
     cd "$PGENV_HOME"
-    if [ ! -d "$VERSION_DIR" ]; then
-      log_error "version is not found: $OPT_PGENV_GLOBAL_CONTEXT"
+    if [ ! -e "$VERSION_DIR" ]; then
+      log_error "version is not found: $version"
       exit 1
     fi
-    log_info "==> create default symbolic link to $OPT_PGENV_GLOBAL_CONTEXT"
-    rm -rf $PGENV_CURRENT_CONTEXT_LINK
-    ln -s "$VERSION_DIR" $PGENV_CURRENT_CONTEXT_LINK
+    log_info "==> create default symbolic link to $version"
+    rm -rf "$PGENV_CURRENT_CONTEXT_LINK"
+    ln -s "$VERSION_DIR" "$PGENV_CURRENT_CONTEXT_LINK"
     echo "export PATH=\"$PGENV_HOME/$PGENV_CURRENT_CONTEXT_LINK/bin\":\"\$PATH\"" > "$PGENV_HOME/$PGENV_PROFILE"
-    if [ $OPT_NO_EXEC -eq 1 ]; then
-      log_info "relogin shell"
-    else
-      exec $SHELL -l
-    fi
   )
 }
 
@@ -193,21 +195,36 @@ pgenv_pg_version() {
 }
 
 pgenv_install_pg() {
-  local SOURCE_URL="$(printf "$POSTGRESQL_REPOSITORY" $OPT_INSTALL_VERSION $OPT_INSTALL_VERSION)"
+  [ $# -eq 0 ] && abort "usage: install [--g3] [--clean] [--shell] [--global] <version>"
+
+  local version=
+  local g3=0 remove_work=0 set_current_context=0 set_global_context=0
+  for arg in "$@"; do
+    case "$arg" in
+      --g3)      g3=1 ;;
+      --clean)   remove_work=1 ;;
+      --shell)   set_current_context=1 ;;
+      --global)  set_global_context=1  ;;
+      -*)        abort "invalid option: $arg" ;;
+      *)         version="$arg"; break; ;;
+    esac
+  done
+
+  local SOURCE_URL="$(printf "$POSTGRESQL_REPOSITORY" "$version" "$version")"
   local SOURCE_FILE="$(basename $SOURCE_URL)"
   local UNARCHIVED_SOURCE_DIR="$PGENV_HOME/$PGNEV_SOURCE_DIR/${SOURCE_FILE%.tar.gz}"
-  local VERSION_DIR="$PGENV_HOME/$PGNEV_VERSIONS_DIR/$OPT_INSTALL_VERSION"
+  local VERSION_DIR="$PGENV_HOME/$PGNEV_VERSIONS_DIR/$version"
 
   mkdir -p "$PGENV_HOME/$PGNEV_SOURCE_DIR" "$PGENV_HOME/$PGNEV_VERSIONS_DIR"
 
-  if [ $OPT_REMOVE_WORK -eq 1 ]; then
-    rm -rf "$PGENV_HOME/$PGNEV_SOURCE_DIR/$SOURCE_FILE"
+  if [ $remove_work -eq 1 ]; then
+    rm -rf "$PGENV_HOME/$PGNEV_SOURCE_DIR/$SOURCE_FILE" "$UNARCHIVED_SOURCE_DIR"
   fi
 
   # Download a tar ball
   if [ ! -f "$PGENV_HOME/$PGNEV_SOURCE_DIR/$SOURCE_FILE" ]; then
     log_info "==> download from $SOURCE_URL"
-    curl -f -o "$PGENV_HOME/$PGNEV_SOURCE_DIR/$SOURCE_FILE" $SOURCE_URL
+    curl -f -o "$PGENV_HOME/$PGNEV_SOURCE_DIR/$SOURCE_FILE" "$SOURCE_URL"
     if [ $? -ne 0 ]; then
       log_error "failed to download source, so exit."
       exit 1
@@ -221,7 +238,7 @@ pgenv_install_pg() {
 
   # Expand a tar ball
   if [ ! -d "$UNARCHIVED_SOURCE_DIR" ]; then
-    (cd "$PGENV_HOME/$PGNEV_SOURCE_DIR"; tar xzf $SOURCE_FILE)
+    (cd "$PGENV_HOME/$PGNEV_SOURCE_DIR"; tar xzf "$SOURCE_FILE")
     if [ $? -ne 0 ]; then
       log_error "failed to unarchive '$PGENV_HOME/$PGNEV_SOURCE_DIR/${SOURCE_FILE}'"
       exit 1
@@ -236,7 +253,7 @@ pgenv_install_pg() {
 
     local CONFIGURE_OPTIONS=
     local CONFIGURE_OPTIONS_FILE="$PGENV_HOME/$PGENV_PG_CONFIGURE_DEFAULT_OPTIONS"
-    if [ -f "$PGENV_HOME/${PGENV_PG_CONFIGURE_DEFAULT_OPTIONS}-${OPT_INSTALL_VERSION}" ]; then
+    if [ -f "$PGENV_HOME/${PGENV_PG_CONFIGURE_DEFAULT_OPTIONS}-${version}" ]; then
       CONFIGURE_OPTIONS_FILE="$PGENV_HOME/${PGENV_PG_CONFIGURE_DEFAULT_OPTIONS}-${OPT_INSTALL_VERSION}"
     fi
     if [ -f "$CONFIGURE_OPTIONS_FILE" ]; then
@@ -249,7 +266,7 @@ pgenv_install_pg() {
     if [ ! -z $POSTGRESQL_CONFIGURE_OPTION ]; then
       CONFIGURE_OPTIONS="${POSTGRESQL_CONFIGURE_OPTION}"
     fi
-    CONFIGURE_OPTIONS="$CONFIGURE_OPTIONS --prefix=$PGENV_HOME/versions/$OPT_INSTALL_VERSION"
+    CONFIGURE_OPTIONS="$CONFIGURE_OPTIONS --prefix=$PGENV_HOME/versions/$version"
 
     log_info "==> configure"
     log_info "$CONFIGURE_OPTIONS"
@@ -261,7 +278,7 @@ pgenv_install_pg() {
       log_info "ok"
     fi
 
-    if [ $OPT_INSTALL_WITH_DEBUG -eq 1 ]; then
+    if [ $g3 -eq 1 ]; then
       log_info "install with CFLAGS '-g3'"
       sed -i -e 's/ -g -02/ -g3/' "$UNARCHIVED_SOURCE_DIR/src/Makefile.global"
     fi
@@ -275,33 +292,44 @@ pgenv_install_pg() {
       log_info "ok"
     fi
 
-    if [ $OPT_REMOVE_WORK -eq 1 ]; then
+    if [ $remove_work -eq 1 ]; then
       log_info "==> remove temporary resources"
-      rm -rf "$PGENV_HOME/$PGNEV_SOURCE_DIR/$SOURCE_FILE"
+      rm -rf "$PGENV_HOME/$PGNEV_SOURCE_DIR/$SOURCE_FILE" "$UNARCHIVED_SOURCE_DIR"
     fi
   )
 
-  if [ ! -z $OPT_PGENV_CONTEXT ]; then
-    pgenv_switch_context
+  if [ $set_current_context -eq 1 ]; then
+    pgenv_switch_context "$version"
   fi
 
-  if [ ! -z $OPT_PGENV_GLOBAL_CONTEXT ]; then
-    pgenv_switch_global_context
+  if [ $set_global_context -eq 1 ]; then
+    pgenv_switch_global_context "$version"
   fi
 }
 
 
 pgenv_uninstall() {
-  local VERSION_DIR="$PGNEV_VERSIONS_DIR/${OPT_UNINSTALL_VERSION:-dummy}"
-  if [ ! -d "$PGENV_HOME/$VERSION_DIR" ]; then
+  [ $# -eq 0 ] && abort "usage: uninstall <version>"
+  local version
+  for arg in "$@"; do
+    case "$arg" in
+      *)         version="$arg"; break; ;;
+    esac
+  done
+  [ -z "$version" ] && abort "version is required"
+
+  local VERSION_DIR="$PGNEV_VERSIONS_DIR/${version}"
+  if [ ! -e "$PGENV_HOME/$VERSION_DIR" ]; then
     log_warn "version is not found: $OPT_UNINSTALL_VERSION"
     exit 1
   fi
-  log_info "==> uninstall $OPT_UNINSTALL_VERSION"
+  log_info "==> uninstall $version"
   rm -rf "$PGENV_HOME/$VERSION_DIR"
 }
 
 pgenv_diff() {
+  [ $# -eq 0 ] && abort "usage: diff <version1>:<version2>:<file>"
+
   local OLD_VER="$(echo $1 | awk -F: '{print $1}')"
   local NEW_VER="$(echo $1 | awk -F: '{print $2}')"
   local FILEPATH="$(echo $1 | awk -F: '{print $3}')"
@@ -313,8 +341,8 @@ pgenv_diff() {
   test "$OLD_VER" = "@" && OLD_VER=`pgenv_current_version`
   test "$NEW_VER" = "@" && NEW_VER=`pgenv_current_version`
 
-  if [ -z $OLD_VER ] || [ -z $NEW_VER ] || [ -z $FILEPATH ]; then
-    log_error "--diff <version1>:<version2>:<file>"
+  if [ -z $OLD_VER ] || [ -z $NEW_VER ] || [ -z "$FILEPATH" ]; then
+    log_error "invalid arguments: $1"
     exit 1
   fi
 
@@ -338,14 +366,16 @@ pgenv_diff() {
 }
 
 pgenv_edit() {
+  [ $# -eq 0 ] && abort "usage: edit <version>:<file>"
+
   local VERSION="$(echo $1 | awk -F: '{print $1}')"
   local FILEPATH="$(echo $1 | awk -F: '{print $2}')"
-  local EDITOR_COMMAND=${EDITOR:-emacs}
+  local EDITOR_COMMAND="${EDITOR:-emacs}"
 
   test "$VERSION" = "@" && VERSION=`pgenv_current_version`
 
   if [ -z $VERSION ] || [ -z "$FILEPATH" ]; then
-    log_error "--edit <version>:<file>"
+    log_error "invalid arguments: $1"
     exit 1
   fi
 
@@ -365,6 +395,8 @@ pgenv_edit() {
 }
 
 pgenv_find_grep() {
+  [ $# -eq 0 ] && abort "usage: grep <version>:<directory>:'<regex>'"
+
   local VERSION="$(echo $1 | awk -F: '{print $1}')"
   local DIRECTORY="$(echo $1 | awk -F: '{print $2}')"
   local REGEXP="$(echo $1 | awk -F: '{print $3}')"
@@ -373,7 +405,7 @@ pgenv_find_grep() {
   test "$DIRECTORY" = "@" && VERSION=`pgenv_current_version`
 
   if [ -z $VERSION ] || [ -z "$DIRECTORY" ] || [ -z "$REGEXP" ]; then
-    log_error "--grep <version>:<directory>:\"<regexp>\""
+    log_error "invalid arguments: $1"
     exit 1
   fi
 
@@ -384,7 +416,7 @@ pgenv_find_grep() {
     FIND_DIRECTORY="$(pgenv_source_prefix $VERSION)/$DIRECTORY"
   fi
 
-  if [ ! -d "$FIND_DIRECTORY" ]; then
+  if [ ! -e "$FIND_DIRECTORY" ]; then
     log_warn "directory not found: $FIND_DIRECTORY"
     exit 1
   fi
@@ -392,11 +424,21 @@ pgenv_find_grep() {
 }
 
 pgenv_select_version() {
-  local VERSIONS_DIR="$PGENV_HOME"/$PGNEV_VERSIONS_DIR
+  local global_context=0 no_exec=
+  for arg in "$@"; do
+    case "$arg" in
+      --no-exec) no_exec="$arg" ;;
+      --global)  global_context=1 ;;
+      -*)        abort "invalid option: $arg" ;;
+      *)         break; ;;
+    esac
+  done
+
+  local VERSIONS_DIR="$PGENV_HOME"/"$PGNEV_VERSIONS_DIR"
   local SELECTED_VERSION=
   echo "Current Version: `pgenv_current_version`"
   PS3="Which version do you select ? (quit:q) > "
-  select SELECTED_VERSION in $(ls $VERSIONS_DIR | sort);
+  select SELECTED_VERSION in $(ls "$VERSIONS_DIR" | sort);
   do
     if [ "${REPLY}" = "q" ] || [ "${REPLY}" = "quit" ]; then
         exit 0
@@ -405,17 +447,19 @@ pgenv_select_version() {
     if [ -z "$SELECTED_VERSION" ]; then
       continue
     fi
-    
+
     case $SELECTED_VERSION in
       *)
-        OPT_PGENV_CONTEXT="$SELECTED_VERSION"
-        pgenv_switch_context
+        if [ $global_context -eq 1 ]; then
+          pgenv_switch_global_context $no_exec "$SELECTED_VERSION"
+        else
+          pgenv_switch_context $no_exec "$SELECTED_VERSION"
+        fi
         exit
         ;;
     esac
   done
 }
-
 
 pgenv_get_version_list() {
   local PG_DIRECTORIES_FILE="$PGENV_HOME/$PGENV_PG_DIRECTORIES"
@@ -442,7 +486,15 @@ pgenv_get_version_list() {
     printf "%s" "$temp"| grep -e 'v[[:digit:]][^"/<>]*' -o | sort | uniq > "$PGENV_HOME/$PGENV_PG_DIRECTORIES"
   fi
 
-  cat "$PGENV_HOME/$PGENV_PG_DIRECTORIES" | sed -e 's/^v//' | sort -n 
+  cat "$PGENV_HOME/$PGENV_PG_DIRECTORIES" | sed -e 's/^v//' | sort -n
+}
+
+pgenv_link() {
+  [ $# -lt 2 ] && log_error "--link <version> <source>" && exit 1
+  local DEST="$1"
+  local SOURCE="$2"
+  local VERSION_DIR="$PGENV_HOME/$PGNEV_VERSIONS_DIR"
+  (cd "$VERSION_DIR" && ln -s "$SOURCE" "$DEST")
 }
 
 # Required options.
@@ -471,127 +523,66 @@ PGENV_PG_DIRECTORIES=postgresql_directories
 # The configure options passed to the configure script.
 POSTGRESQL_CONFIGURE_OPTION="${CONFIGURE_OPTIONS:-}"
 
-# The installed version.
-OPT_INSTALL_VERSION=
-
-# The context to set.
-OPT_PGENV_CONTEXT=
-
-# The global context to set.
-OPT_PGENV_GLOBAL_CONTEXT=
-
-# Whether install with debug mode.
-# 0: normal, 1: debug
-OPT_INSTALL_WITH_DEBUG=0
-
-# Remove temporary resources.
-# 0: not remove, 1: remove
-OPT_REMOVE_WORK=0
-
-# Do exec at switching context.
-# 0: no exec, 1: do exec
-OPT_NO_EXEC=0
-
-# The uninstalled version.
-OPT_UNINSTALL_VERSION=
-
 ################
+
+[ $# -eq 0 ] && usage && exit 1
 
 PGENV_COMMAND=
 
-# Parse options.
-while [ $# -gt 0 ]; do
-  case $1 in
-    -i|--install)
-      shift; pgenv_validate_option_value "$1"
-      OPT_INSTALL_VERSION=$(pgenv_parse_option "$1")
-      PGENV_COMMAND="pgenv_install_pg"
-      ;;
-    -s|--set)
-      shift; OPT_PGENV_CONTEXT=$(pgenv_parse_option "$1")
-      PGENV_COMMAND="pgenv_switch_context"
-      ;;
-    -g|--global-set)
-      shift; pgenv_validate_option_value "$1"
-      OPT_PGENV_GLOBAL_CONTEXT=$(pgenv_parse_option "$1")
-      PGENV_COMMAND="pgenv_switch_global_context"
-      ;;
-    -v|--version)
-      pgenv_pg_version
-      exit
-      ;;
-    -h|--help)
-      usage && exit
-      ;;
-    -d|--with-debug|-g3)
-      OPT_INSTALL_WITH_DEBUG=1
-      ;;
-    -l|--list)
-      pgenv_pg_installed_version
-      exit
-      ;;
-    --remove-work)
-      OPT_REMOVE_WORK=1
-      ;;
-    --no-exec)
-      OPT_NO_EXEC=1
-      ;;
-    --uninstall)
-      shift; pgenv_validate_option_value "$1"
-      OPT_UNINSTALL_VERSION="$1"
-      PGENV_COMMAND="pgenv_uninstall"
-      ;;
-    --prefix)
-      pgenv_prefix
-      exit
-      ;;
-    --prefix-ver)
-      shift; pgenv_validate_option_value "$1"
-      pgenv_prefix "$1"
-      exit
-      ;;
-    --source-prefix)
-      pgenv_source_prefix
-      exit
-      ;;
-    --source-prefix-ver)
-      shift; pgenv_validate_option_value "$1"
-      pgenv_source_prefix "$1"
-      exit
-      ;;
-    --diff)
-      shift; pgenv_validate_option_value "$1"
-      pgenv_diff "$1"
-      exit
-      ;;
-    -e|--edit)
-      shift; pgenv_validate_option_value "$1"
-      pgenv_edit "$1"
-      exit
-      ;;
-    --grep)
-      shift; pgenv_validate_option_value "$1"
-      pgenv_find_grep "$1"
-      exit
-      ;;
-    --select)
-      pgenv_select_version
-      exit
-      ;;
-    --directories)
-      pgenv_get_version_list
-      exit
-      ;;
-    -*)
-      echo "$1: invalid option" && exit 1
-      ;;
-    *)
-      break
-      ;;		 
-  esac
-  shift
-done
+case "$1" in
+  "install")
+    PGENV_COMMAND="pgenv_install_pg"
+    ;;
+  "uninstall"|"remove")
+    PGENV_COMMAND="pgenv_uninstall"
+    ;;
+  "shell")
+    PGENV_COMMAND="pgenv_switch_context"
+    ;;
+  "global")
+    PGENV_COMMAND="pgenv_switch_global_context"
+    ;;
+  "list")
+    PGENV_COMMAND="pgenv_pg_installed_version"
+    ;;
+  "version")
+    PGENV_COMMAND="pgenv_pg_version"
+    ;;
+  "prefix")
+    PGENV_COMMAND="pgenv_prefix"
+    ;;
+  "source-prefix")
+    PGENV_COMMAND="pgenv_source_prefix"
+    ;;
+  "diff")
+    PGENV_COMMAND="pgenv_diff"
+    ;;
+  "edit")
+    PGENV_COMMAND="pgenv_edit"
+    ;;
+  "grep")
+    PGENV_COMMAND="pgenv_grep"
+    ;;
+  "select")
+    PGENV_COMMAND="pgenv_select_version"
+    ;;
+  "directories")
+    PGENV_COMMAND="pgenv_get_version_list"
+    ;;
+  "link")
+    PGENV_COMMAND="pgenv_link"
+    ;;
+  "help")
+    usage && exit
+    ;;
+  -*)
+    echo "invalid option: $1" && exit 1
+    ;;
+  *)
+    break
+    ;;
+esac
+shift
 
-if [ ! -z $PGENV_COMMAND ]; then
-  $PGENV_COMMAND
-fi
+[ -z "$PGENV_COMMAND" ] && usage && exit 1
+"$PGENV_COMMAND" "$@"
