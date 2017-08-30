@@ -4,10 +4,11 @@
 #
 set -u
 
+
 HERE="$(cd -P -- "$(dirname -- "${BASH_SOURCE:-$0}")" && pwd -P)"
 PGENV_HOME="$(cd -P -- "$HERE"/.. && pwd -P)"
 
-usage() {
+pgenv_help() {
   cat<<EOS
 usage: $(basename $0) <command> [<args>]
 
@@ -35,7 +36,7 @@ COMMAND:
       Open editor with the specified file.
   grep <version>:<directory>:"<regex>"
       Find and Grep.
-  select [--global] [--no-exec]
+  select [-g|--global] [--no-exec]
       Interactively select version in current context. (do exec \$SHELL)
   directories
       Get and show version list from postgresql source repository
@@ -43,6 +44,14 @@ COMMAND:
      Create a symbolic link <version> to <source> under the version directory.
   help
       Show usage.
+
+COMMAND FOR CLUSTER:
+  setup-cluster [--datadir] <synchronous standby number>:<ansynchronous standby number>
+     Create a cluster.
+  stop-cluster [--node <node>[,<node>...]>] <datadir>
+     Stop a cluster.
+  remove-cluster <datadir>
+     Remove a cluster.
 
 ENVIRONMENT VARIABLES:
 
@@ -71,12 +80,42 @@ log_debug() { [ $PGENV_LOG_LEVEL -le 0 ] && print_log "$(_datetime) [DEBUG] $@";
 log_info()  { [ $PGENV_LOG_LEVEL -le 1 ] && print_log "$(_datetime) [INFO] $@";  }
 log_warn()  { [ $PGENV_LOG_LEVEL -le 2 ] && print_log "$(_datetime) [WARN] $@";  } >&2
 log_error() { [ $PGENV_LOG_LEVEL -le 3 ] && print_log "$(_datetime) [ERROR] $@"; } >&2
-print_log() { echo "$@"; }
+print_log() { printf "%b\n" "$@"; }
 
 abort() {
-  echo "$@"
+  if [ $# -ne 0 ]; then
+    echo "$@"
+  else
+    cat -
+  fi
   exit 1
 } >&2
+
+step() {
+  local prefix="$1"
+  local begin_num="$2"
+  local step_count="$3"
+  local step="${4:-1}"
+  [ $step_count -eq 0 ] && return
+  eval echo ${prefix}{$begin_num..$((begin_num + step_count - 1))..$step}
+}
+
+resolve_link() {
+  local filepath="$1"
+  local filename
+  (
+    while [ "$filepath" != "" ]; do
+      cd "$(dirname "$filepath")"
+      filename="$(basename "$filepath")"
+      filepath="$(readlink "$filename" ||:)"
+    done
+    echo "$(pwd -P)/$filename"
+  )
+}
+
+abs_dirname() {
+  echo "$(cd -P -- $(dirname -- "$1") && pwd -P)"
+}
 
 pgenv_parse_option() {
   local value="${1:-}"
@@ -97,14 +136,14 @@ pgenv_validate_option_value() {
   return 0
 }
 
-pgenv_current_version() {
+pgenv_current() {
   if [ -L "$PGENV_HOME/$PGENV_CURRENT_CONTEXT_LINK" ]; then
-    basename "$(cd -P -- $PGENV_HOME/$PGENV_CURRENT_CONTEXT_LINK && pwd -P)"
+    basename "$(cd -P -- "$PGENV_HOME/$PGENV_CURRENT_CONTEXT_LINK" && pwd -P)"
   fi
 }
 
 pgenv_prefix() {
-  local VERSION=${1:-`pgenv_current_version`}
+  local VERSION=${1:-`pgenv_current`}
   local VERSION_DIR="$PGENV_HOME/$PGNEV_VERSIONS_DIR/$VERSION"
   if [ ! -z $VERSION ] && [ -e "$VERSION_DIR" ]; then
     echo $VERSION_DIR
@@ -112,14 +151,14 @@ pgenv_prefix() {
 }
 
 pgenv_source_prefix() {
-  local VERSION=${1:-`pgenv_current_version`}
+  local VERSION=${1:-`pgenv_current`}
   local SOURCE_DIR="$PGENV_HOME/$PGNEV_SOURCE_DIR/postgresql-$VERSION"
   if [ ! -z $VERSION ] && [ -e "$SOURCE_DIR" ]; then
     echo $SOURCE_DIR
   fi
 }
 
-pgenv_switch_context() {
+pgenv_shell() {
   [ $# -eq 0 ] && abort "usage: shell [--no-exec] <version>"
   local no_exec=0
   local version
@@ -150,7 +189,7 @@ EOS
   )
 }
 
-pgenv_switch_global_context() {
+pgenv_global() {
   [ $# -eq 0 ] && abort "usage: global <version>"
   local no_exec=0
   local version
@@ -177,7 +216,7 @@ pgenv_switch_global_context() {
   )
 }
 
-pgenv_pg_installed_version() {
+pgenv_list() {
   local CURRENT_VERSION=`pgenv_current_version`
   echo "Installed Versions ( * is current context ):"
   for ver in $(ls "$PGENV_HOME/$PGNEV_VERSIONS_DIR/" 2> /dev/null | sort); do
@@ -189,12 +228,12 @@ pgenv_pg_installed_version() {
   done
 }
 
-pgenv_pg_version() {
+pgenv_version() {
   echo "Global Context : `pgenv_prefix`"
   echo "Current Context: `psql -V`"
 }
 
-pgenv_install_pg() {
+pgenv_install() {
   [ $# -eq 0 ] && abort "usage: install [--g3] [--clean] [--shell] [--global] <version>"
 
   local version=
@@ -394,7 +433,7 @@ pgenv_edit() {
   fi
 }
 
-pgenv_find_grep() {
+pgenv_grep() {
   [ $# -eq 0 ] && abort "usage: grep <version>:<directory>:'<regex>'"
 
   local VERSION="$(echo $1 | awk -F: '{print $1}')"
@@ -423,20 +462,20 @@ pgenv_find_grep() {
   find $FIND_DIRECTORY -type f -print0 | xargs -0 grep -I -e "$REGEXP"
 }
 
-pgenv_select_version() {
+pgenv_select() {
   local global_context=0 no_exec=
   for arg in "$@"; do
     case "$arg" in
-      --no-exec) no_exec="$arg" ;;
-      --global)  global_context=1 ;;
-      -*)        abort "invalid option: $arg" ;;
-      *)         break; ;;
+      --no-exec)    no_exec="$arg" ;;
+      -g|--global)  global_context=1 ;;
+      -*)           abort "invalid option: $arg" ;;
+      *)            break; ;;
     esac
   done
 
   local VERSIONS_DIR="$PGENV_HOME"/"$PGNEV_VERSIONS_DIR"
   local SELECTED_VERSION=
-  echo "Current Version: `pgenv_current_version`"
+  echo "Current Version: `pgenv_current`"
   PS3="Which version do you select ? (quit:q) > "
   select SELECTED_VERSION in $(ls "$VERSIONS_DIR" | sort);
   do
@@ -451,9 +490,9 @@ pgenv_select_version() {
     case $SELECTED_VERSION in
       *)
         if [ $global_context -eq 1 ]; then
-          pgenv_switch_global_context $no_exec "$SELECTED_VERSION"
+          pgenv_global $no_exec "$SELECTED_VERSION"
         else
-          pgenv_switch_context $no_exec "$SELECTED_VERSION"
+          pgenv_shell $no_exec "$SELECTED_VERSION"
         fi
         exit
         ;;
@@ -461,7 +500,7 @@ pgenv_select_version() {
   done
 }
 
-pgenv_get_version_list() {
+pgenv_directories() {
   local PG_DIRECTORIES_FILE="$PGENV_HOME/$PGENV_PG_DIRECTORIES"
   local SHOULD_REFRESH=0
   local RET=0
@@ -490,16 +529,218 @@ pgenv_get_version_list() {
 }
 
 pgenv_link() {
-  [ $# -lt 2 ] && log_error "--link <version> <source>" && exit 1
+  [ $# -lt 2 ] && log_error "usage: link <version> <source>" && exit 1
   local DEST="$1"
   local SOURCE="$2"
   local VERSION_DIR="$PGENV_HOME/$PGNEV_VERSIONS_DIR"
   (cd "$VERSION_DIR" && ln -s "$SOURCE" "$DEST")
 }
 
+pgenv_setup_cluster() {
+  [ $# -eq 0 ] && abort "usage: setup-cluster [--datadir <datadir>] [--port <start port>] <synchronous standby number>:<ansynchronous standby number>"
+  local DATA_PREFIX=data
+  local SERVER_PREFIX=server
+  local CLUSTER_FILE=cluster
+  local datadir=. start_port=5432
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --datadir) shift; datadir="$1"       ;;
+      --port)    shift; start_port="$1"    ;;
+      *)
+        break
+        ;;
+    esac
+    shift
+  done
+  [ $# -eq 0 ] && abort "required <synchronous standby number>:<asynchronous standby number>"
+  [ -z "$datadir" ] && abort "datadir is empty"
+
+  local arg="$1"
+  local sync_num="$(echo "$arg" | awk -F":" '{print $1}')"
+  local async_num="$(echo "$arg" | awk -F":" '{print $2}')"
+
+  if [[ ! $sync_num =~ ^[0-9]+$ ]] || [[ ! $async_num =~ ^[0-9]+$ ]]; then
+    abort "invalid argument: $arg"
+  fi
+
+  mkdir -p "$datadir"
+  datadir="$(abs_dirname "$datadir/x")"
+  (
+    cd "$datadir"
+    log_info "==> initdb for cluster"
+    local data_dirname="${DATA_PREFIX}1"
+    log_info "$data_dirname"
+    if [ -e "${data_dirname}" ]; then
+      log_warn "already exists: $data_dirname"
+    else
+      initdb --encoding=utf8 --no-locale "$data_dirname" >/dev/null 2>&1
+      [ $? -ne 0 ] && log_error "failed to do initdb: $data_dirname" | abort
+    fi
+  )
+
+  local primary_server="${SERVER_PREFIX}1"
+  local primary_data="${DATA_PREFIX}1"
+  local primary_port="$start_port"
+  local synchronous_standby_servers=( $(step "$SERVER_PREFIX" 2 $sync_num) )
+  local synchronous_standby_data=( ${synchronous_standby_servers[@]/$SERVER_PREFIX/$DATA_PREFIX} )
+  local synchronous_standby_ports=( $(step "" $((start_port + 1)) $sync_num) )
+  local standby_servers=( $(step "$SERVER_PREFIX" $((2 + sync_num)) $async_num) )
+  local standby_data=( ${standby_servers[@]/$SERVER_PREFIX/$DATA_PREFIX} )
+  local standby_ports=( $(step "" $((start_port + 1 + sync_num)) $async_num) )
+  local all_servers=($primary_server "${synchronous_standby_servers[@]}" "${standby_servers[@]}")
+  local all_data=($primary_data "${synchronous_standby_data[@]}" "${standby_data[@]}")
+  local all_ports=($primary_port "${synchronous_standby_ports[@]}" "${standby_ports[@]}")
+
+  [ -f "$datadir/$CLUSTER_FILE" ] && source "$datadir/$CLUSTER_FILE"
+
+  log_info "==> primary server" "${primary_server}/${primary_data}/${primary_port}"
+  log_info "==> synchronous standby servers"
+  for idx in ${!synchronous_standby_servers[@]}; do
+    printf "%s/%s/%d\n" ${synchronous_standby_servers[$idx]} ${synchronous_standby_data[$idx]} ${synchronous_standby_ports[$idx]}
+  done
+  log_info "==> standby servers"
+  for idx in ${!standby_servers[@]}; do
+    printf "%s/%s/%d\n" ${standby_servers[$idx]} ${standby_data[$idx]} ${standby_ports[$idx]}
+  done
+
+  (
+    cd "$datadir"
+
+    # Setup master
+    if [ ! -f "$CLUSTER_FILE" ]; then
+      cat<<EOS >> "${primary_data}/postgresql.conf"
+synchronous_standby_names = '$(echo "${synchronous_standby_servers[@]}" | sed -e "s/ /,/g")'
+max_wal_senders = $((2 + sync_num + async_num))
+wal_level = hot_standby
+archive_mode = off
+wal_keep_segments = 8
+EOS
+
+      cat <<EOS >> "${primary_data}/pg_hba.conf"
+host   replication     $(whoami)             127.0.0.1/32               trust
+host   replication     $(whoami)             ::1/128                    trust
+EOS
+    fi
+
+    log_info "==> start ${primary_server}"
+    "$(pgenv prefix)"/bin/pg_ctl start -w -D "$primary_data" -o "-p $primary_port"
+
+    # Setup synchronous standby servers
+    for idx in ${!synchronous_standby_servers[@]}; do
+      if [ ! -f "$CLUSTER_FILE" ]; then
+        log_info "==> ${synchronous_standby_servers[$idx]}: pg_basebackup from $primary_server"
+        "$(pgenv prefix)"/bin/pg_basebackup -h localhost -p $primary_port -D ${synchronous_standby_data[$idx]} --xlog --progress --checkpoint=fast
+        cat <<EOS >> "${synchronous_standby_data[$idx]}/postgresql.conf"
+hot_standby = on
+EOS
+        cat <<EOS >> "${synchronous_standby_data[$idx]}/recovery.conf"
+recovery_target_timeline=latest
+primary_conninfo='host=localhost port=${primary_port} application_name=${synchronous_standby_servers[$idx]}'
+standby_mode=on
+EOS
+        cat <<EOS >> "${synchronous_standby_data[$idx]}/pg_hba.conf"
+local   replication     $(whoami)                                trust
+EOS
+      fi
+      log_info "==> start ${synchronous_standby_servers[$idx]}"
+      "$(pgenv prefix)"/bin/pg_ctl start -w -D "${synchronous_standby_data[$idx]}" -o "-p ${synchronous_standby_ports[$idx]}"
+    done
+
+    # Setup standby servers
+    for idx in ${!standby_servers[@]}; do
+      if [ ! -f "$CLUSTER_FILE" ]; then
+        log_info "==> ${standby_servers[$idx]}: pg_basebackup from $primary_server"
+        "$(pgenv prefix)"/bin/pg_basebackup -h localhost -p $primary_port -D ${standby_data[$idx]} --xlog --progress --checkpoint=fast
+
+        cat <<EOS >> "${standby_data[$idx]}/postgresql.conf"
+hot_standby = on
+EOS
+        cat <<EOS >> "${standby_data[$idx]}/recovery.conf"
+recovery_target_timeline=latest
+primary_conninfo='host=localhost port=${primary_port} application_name=${standby_servers[$idx]}'
+standby_mode=on
+EOS
+      fi
+      log_info "==> start ${standby_servers[$idx]}"
+      "$(pgenv prefix)"/bin/pg_ctl start -w -D "${standby_data[$idx]}" -o "-p ${standby_ports[$idx]}"
+    done
+
+    log_info "==> show pg_stat_replication view"
+    log_debug "select * from pg_stat_replication"
+    psql -p ${primary_port} -x -c "select * from pg_stat_replication" postgres
+  )
+
+  log_info "==> save cluster information" "$datadir/$CLUSTER_FILE"
+  cat <<EOF > "$datadir"/$CLUSTER_FILE
+primary_server="${SERVER_PREFIX}1"
+primary_data="${DATA_PREFIX}1"
+primary_port="$start_port"
+synchronous_standby_servers=( $(step "$SERVER_PREFIX" 2 $sync_num) )
+synchronous_standby_data=( ${synchronous_standby_servers[@]/$SERVER_PREFIX/$DATA_PREFIX} )
+synchronous_standby_ports=( $(step "" $((start_port + 1)) $sync_num) )
+standby_servers=( $(step "$SERVER_PREFIX" $((2 + sync_num)) $async_num) )
+standby_data=( ${standby_servers[@]/$SERVER_PREFIX/$DATA_PREFIX} )
+standby_ports=( $(step "" $((start_port + 1 + sync_num)) $async_num) )
+all_servers=($primary_server ${synchronous_standby_servers[@]} ${standby_servers[@]})
+all_data=($primary_data ${synchronous_standby_data[@]} ${standby_data[@]})
+all_ports=($primary_port ${synchronous_standby_ports[@]} ${standby_ports[@]})
+EOF
+
+  log_info "==> Stop cluster?"
+  for idx in ${!all_servers[@]}; do
+    echo $(pgenv prefix)/bin/pg_ctl -D "$datadir/${all_data[$idx]}" -w stop
+  done
+}
+
+pgenv_stop_cluster() {
+  [ $# -eq 0 ] && abort "usage: stop-cluster [--node <node>[,<node>...]] <datadir>"
+  local datadir=
+  local CLUSTER_FILE=cluster
+  declare -A stop_nodes
+  stop_nodes=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --node)
+        shift
+        for node in ${1/,/ }; do
+          stop_nodes[$node]=1
+        done
+        ;;
+      *)
+        break
+        ;;
+    esac
+    shift
+  done
+  [ $# -eq 0 ] && abort "datadir is empty"
+  datadir="$1"
+  [ ! -e "$datadir" ] && abort "'$datadir' does not exist"
+  (
+    cd "$datadir"
+    [ ! -f "$CLUSTER_FILE" ] && abort "'$CLUSTER_FILE' is not found in '$datadir'"
+    source "$CLUSTER_FILE"
+    for idx in $(eval echo {$((${#all_servers[@]} - 1))..0}); do
+      local node="${all_servers[$idx]}"
+      if [ ${#stop_nodes[@]} -eq 0 ] || [ -n "${stop_nodes[$node]:-}" ]; then
+        log_info "==> stop ${all_servers[$idx]}"
+        "$(pgenv prefix)"/bin/pg_ctl -D "${all_data[$idx]}" -w stop
+      fi
+    done
+  )
+}
+
+pgenv_remove_cluster() {
+  local datadir="${1:-.}"
+  local CLUSTER_FILE=cluster
+  [ ! -e "$datadir" ] && abort "'$datadir' does not exist"
+  [ ! -f "$datadir/$CLUSTER_FILE" ] && abort "'$CLUSTER_FILE' is not found in '$datadir'"
+  pgenv_stop_cluster "$datadir"
+  rm -rf "$datadir"
+}
+
 # Required options.
 if [ $# -eq 0 ]; then
-  usage && exit
+  pgenv_help && exit
 fi
 
 ### Variables ###
@@ -525,64 +766,11 @@ POSTGRESQL_CONFIGURE_OPTION="${CONFIGURE_OPTIONS:-}"
 
 ################
 
-[ $# -eq 0 ] && usage && exit 1
+[ $# -eq 0 ] && pgenv_help && abort
 
-PGENV_COMMAND=
-
-case "$1" in
-  "install")
-    PGENV_COMMAND="pgenv_install_pg"
-    ;;
-  "uninstall"|"remove")
-    PGENV_COMMAND="pgenv_uninstall"
-    ;;
-  "shell")
-    PGENV_COMMAND="pgenv_switch_context"
-    ;;
-  "global")
-    PGENV_COMMAND="pgenv_switch_global_context"
-    ;;
-  "list")
-    PGENV_COMMAND="pgenv_pg_installed_version"
-    ;;
-  "version")
-    PGENV_COMMAND="pgenv_pg_version"
-    ;;
-  "prefix")
-    PGENV_COMMAND="pgenv_prefix"
-    ;;
-  "source-prefix")
-    PGENV_COMMAND="pgenv_source_prefix"
-    ;;
-  "diff")
-    PGENV_COMMAND="pgenv_diff"
-    ;;
-  "edit")
-    PGENV_COMMAND="pgenv_edit"
-    ;;
-  "grep")
-    PGENV_COMMAND="pgenv_grep"
-    ;;
-  "select")
-    PGENV_COMMAND="pgenv_select_version"
-    ;;
-  "directories")
-    PGENV_COMMAND="pgenv_get_version_list"
-    ;;
-  "link")
-    PGENV_COMMAND="pgenv_link"
-    ;;
-  "help")
-    usage && exit
-    ;;
-  -*)
-    echo "invalid option: $1" && exit 1
-    ;;
-  *)
-    break
-    ;;
-esac
+PGENV_COMMAND="pgenv_${1/-/_}"
+if ! type -t "$PGENV_COMMAND" > /dev/null 2>&1; then
+  abort "invalid command: $PGENV_COMMAND"
+fi
 shift
-
-[ -z "$PGENV_COMMAND" ] && usage && exit 1
 "$PGENV_COMMAND" "$@"

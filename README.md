@@ -27,8 +27,8 @@ source ~/.bash_profile
 
 ```
 pgenv install --g3 9.6.3
-pgenv set 9.6.3         # exec $SHELL
-pgenv global-set 9.6.3  # exec $SHELL -l
+pgenv shell 9.6.3       # exec $SHELL
+pgenv global 9.6.3
 psql -V
 ```
 
