@@ -2,7 +2,7 @@
 #
 # pgenv
 #
-set -u
+set -eu
 
 
 HERE="$(cd -P -- "$(dirname -- "${BASH_SOURCE:-$0}")" && pwd -P)"
@@ -66,10 +66,10 @@ INSTALL:
    # ~/.bash_profile
    source $PGENV_HOME/profile
 
-Example) Install PostgreSQL Version 9.6.3
+Example) Install PostgreSQL Version 9.6.3 and set the global context to 9.6.3.
 
   \$ $(basename $0) install --g3 9.6.3
-  \$ $(basename $0) set 9.6.3
+  \$ $(basename $0) global 9.6.3
   \$ psql -V
 
 EOS
@@ -212,12 +212,15 @@ pgenv_global() {
     log_info "==> create default symbolic link to $version"
     rm -rf "$PGENV_CURRENT_CONTEXT_LINK"
     ln -s "$VERSION_DIR" "$PGENV_CURRENT_CONTEXT_LINK"
-    echo "export PATH=\"$PGENV_HOME/$PGENV_CURRENT_CONTEXT_LINK/bin\":\"\$PATH\"" > "$PGENV_HOME/$PGENV_PROFILE"
+    echo "export PATH=\"$PGENV_HOME/$PGENV_CURRENT_CONTEXT_LINK/bin:\$PATH\"" > "$PGENV_HOME/$PGENV_PROFILE"
+    echo "export POSTGRES_HOME=\"$PGENV_HOME/$PGENV_CURRENT_CONTEXT_LINK\"" >> "$PGENV_HOME/$PGENV_PROFILE"
+    echo "export PGLIB=\"\$POSTGRES_HOME/lib\"" >> "$PGENV_HOME/$PGENV_PROFILE"
+    echo "export LD_LIBRARY_PATH=\"\$PGLIB:\$LD_LIBRARY_PATH\"" >> "$PGENV_HOME/$PGENV_PROFILE"
   )
 }
 
 pgenv_list() {
-  local CURRENT_VERSION=`pgenv_current_version`
+  local CURRENT_VERSION="`pgenv_current`"
   echo "Installed Versions ( * is current context ):"
   for ver in $(ls "$PGENV_HOME/$PGNEV_VERSIONS_DIR/" 2> /dev/null | sort); do
     if [ "$ver" = "$CURRENT_VERSION" ]; then
@@ -230,7 +233,9 @@ pgenv_list() {
 
 pgenv_version() {
   echo "Global Context : `pgenv_prefix`"
-  echo "Current Context: `psql -V`"
+  $(which psql &> /dev/null) && {
+    echo "Current Context: `psql -V`"
+  }
 }
 
 pgenv_install() {
@@ -413,7 +418,7 @@ pgenv_edit() {
 
   test "$VERSION" = "@" && VERSION=`pgenv_current_version`
 
-  if [ -z $VERSION ] || [ -z "$FILEPATH" ]; then
+  if [ -z "$VERSION" ] || [ -z "$FILEPATH" ]; then
     log_error "invalid arguments: $1"
     exit 1
   fi
@@ -449,7 +454,7 @@ pgenv_grep() {
   fi
 
   local FIND_DIRECTORY=
-  if [ "${FILEPATH:0:1}" = "/" ]; then
+  if [ "${DIRECTORY:0:1}" = "/" ]; then
     FIND_DIRECTORY="$DIRECTORY"
   else
     FIND_DIRECTORY="$(pgenv_source_prefix $VERSION)/$DIRECTORY"
@@ -507,7 +512,8 @@ pgenv_directories() {
   local temp=
 
   if [ -f "$PG_DIRECTORIES_FILE" ] && [ -s "$PG_DIRECTORIES_FILE" ]; then
-    if [ $(find "$PG_DIRECTORIES_FILE" -mtime 1 | wc -l) -ne 0 ]; then
+    local updated_directory_file="$(find "$PG_DIRECTORIES_FILE" -mtime +1)"
+    if [ -n "$updated_directory_file" ]; then
       SHOULD_REFRESH=1
     fi
   else
