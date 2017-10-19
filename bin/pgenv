@@ -293,7 +293,7 @@ pgenv_install() {
   (
     cd "$UNARCHIVED_SOURCE_DIR"
     log_info "==> make clean"
-    make clean > "$PGENV_HOME/$PGENV_PG_INSTALL_LOG" 2>&1
+    make clean > "$PGENV_HOME/$PGENV_PG_INSTALL_LOG" 2>&1 ||:
 
     local CONFIGURE_OPTIONS=
     local CONFIGURE_OPTIONS_FILE="$PGENV_HOME/$PGENV_PG_CONFIGURE_DEFAULT_OPTIONS"
